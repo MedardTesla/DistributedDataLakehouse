@@ -1,0 +1,20 @@
+name: 'ecommerce_lakehouse'
+version: '1.0.0'
+config-version: 2
+
+profile: 'ecommerce'
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+
+models:
+  ecommerce_lakehouse:
+    bronze:
+      +materialized: view
+      +schema: bronze
+    silver:
+      +materialized: table
+      +schema: silver
+    gold:
+      +materialized: table
+      +schema: gold

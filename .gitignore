@@ -1,0 +1,22 @@
+# Environnement
+.env
+.env.*
+!.env.example
+
+# Python
+*.pyc
+__pycache__/
+.Python
+venv/
+.venv/
+
+# Données
+data/
+
+# Airflow
+airflow/logs/
+
+# dbt
+dbt/target/
+dbt/dbt_packages/
+dbt/.dbt/
