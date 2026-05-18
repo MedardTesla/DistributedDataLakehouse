@@ -1,7 +1,8 @@
-# ═══════════════════════════════════════════════════════════════
-#  Data Lakehouse Stack — E-commerce
-#  Compatible Windows (WSL2) + Linux + macOS
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
+#  Data Lakehouse — Olist E-commerce
+#  Stack : MinIO · Nessie · Trino · Airflow · dbt · PostgreSQL
+#  Compatible : Windows (WSL2) · Linux · macOS
+# ═══════════════════════════════════════════════════════════════════════════
 
 x-airflow-common: &airflow-common
   image: apache/airflow:2.9.1
@@ -12,13 +13,18 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
-    AIRFLOW_CONN_MINIO_S3: '{"conn_type":"aws","extra":{"endpoint_url":"http://minio:9000","aws_access_key_id":"admin","aws_secret_access_key":"password123"}}'
-    AIRFLOW_CONN_TRINO_DEFAULT: '{"conn_type":"trino","host":"trino","port":8080,"schema":"bronze"}'
+    AIRFLOW_CONN_MINIO_S3: >-
+      {"conn_type":"aws","extra":{"endpoint_url":"http://minio:9000",
+      "aws_access_key_id":"admin","aws_secret_access_key":"password123"}}
+    AIRFLOW_CONN_TRINO_DEFAULT: >-
+      {"conn_type":"trino","host":"trino","port":8080,"schema":"bronze"}
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
     - ./airflow/plugins:/opt/airflow/plugins
+    - ./scripts:/opt/scripts
     - ./dbt:/opt/dbt
+    - ./data:/opt/data
   depends_on:
     postgres:
       condition: service_healthy
@@ -34,9 +40,7 @@ volumes:
 
 services:
 
-  # ─────────────────────────────────────────────────────────────
-  # MINIO
-  # ─────────────────────────────────────────────────────────────
+  # ── MinIO ──────────────────────────────────────────────────────────────────
   minio:
     image: quay.io/minio/minio:latest
     container_name: minio
@@ -73,9 +77,9 @@ services:
         echo 'Buckets crees';
       "
 
-  # ─────────────────────────────────────────────────────────────
-  # NESSIE
-  # ─────────────────────────────────────────────────────────────
+  # ── Nessie ─────────────────────────────────────────────────────────────────
+  # NESSIE_WAREHOUSE_PER_USER_MODE=false  → Nessie accepte n'importe quel warehouse
+  # NESSIE_CATALOG_WAREHOUSES_LAKEHOUSE_LOCATION → déclare le warehouse "lakehouse"
   nessie:
     image: ghcr.io/projectnessie/nessie:latest
     container_name: nessie
@@ -85,22 +89,26 @@ services:
     environment:
       NESSIE_VERSION_STORE_TYPE: IN_MEMORY
       QUARKUS_HTTP_PORT: 19120
+      # Déclare le warehouse "lakehouse" pointant vers MinIO
+      NESSIE_CATALOG_WAREHOUSES_LAKEHOUSE_LOCATION: s3://nessie-warehouse/
+      # Credentials S3 pour que Nessie accède à MinIO
+      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_ENDPOINT: http://minio:9000
+      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_PATH_STYLE_ACCESS: "true"
+      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_ACCESS_KEY_ID: admin
+      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_SECRET_ACCESS_KEY: password123
+      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_REGION: us-east-1
     volumes:
       - nessie-data:/nessie/data
+    depends_on:
+      minio:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:19120/api/v2/config"]
       interval: 15s
       timeout: 5s
-      retries: 5
+      retries: 8
 
-  # ─────────────────────────────────────────────────────────────
-  # TRINO — FIX définitif Windows/WSL2
-  #
-  # PRINCIPE : l'image trinodb/trino embarque une config par défaut
-  # single-node complète. On ne monte QUE le dossier catalog/
-  # (dossier → dossier = pas de problème Windows).
-  # Aucun entrypoint override, aucun bind-mount de fichier individuel.
-  # ─────────────────────────────────────────────────────────────
+  # ── Trino ──────────────────────────────────────────────────────────────────
   trino:
     image: trinodb/trino:438
     container_name: trino
@@ -108,7 +116,6 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      # Seul un DOSSIER est monté — fonctionne partout y compris Windows
       - ./trino/catalog:/etc/trino/catalog
     depends_on:
       nessie:
@@ -121,9 +128,7 @@ services:
       timeout: 5s
       retries: 12
 
-  # ─────────────────────────────────────────────────────────────
-  # POSTGRESQL
-  # ─────────────────────────────────────────────────────────────
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
   postgres:
     image: postgres:15
     container_name: postgres
@@ -139,9 +144,7 @@ services:
       interval: 10s
       retries: 5
 
-  # ─────────────────────────────────────────────────────────────
-  # AIRFLOW
-  # ─────────────────────────────────────────────────────────────
+  # ── Airflow init ────────────────────────────────────────────────────────────
   airflow-init:
     <<: *airflow-common
     container_name: airflow-init
@@ -153,6 +156,7 @@ services:
         airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@lakehouse.local &&
         echo 'Airflow initialise'
 
+  # ── Airflow webserver ───────────────────────────────────────────────────────
   airflow-webserver:
     <<: *airflow-common
     container_name: airflow-webserver
@@ -169,6 +173,7 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
+  # ── Airflow scheduler ──────────────────────────────────────────────────────
   airflow-scheduler:
     <<: *airflow-common
     container_name: airflow-scheduler
@@ -178,11 +183,11 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
-  # ─────────────────────────────────────────────────────────────
-  # DBT
-  # ─────────────────────────────────────────────────────────────
+  # ── dbt ────────────────────────────────────────────────────────────────────
   dbt:
-    build: ./dbt          # construit depuis dbt/Dockerfile via pip install
+    build:
+      context: ./dbt
+      dockerfile: Dockerfile
     container_name: dbt
     networks: [lakehouse]
     volumes:
