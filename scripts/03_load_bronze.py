@@ -66,8 +66,9 @@ def load_table(cur, csv_path, table, columns, loaded_at):
     df = df[available].fillna("")
 
     all_cols = available + ["_loaded_at"]
-    placeholders = ", ".join(["?"] * len(all_cols))
-    sql = f"INSERT INTO bronze.{table} ({', '.join(all_cols)}) VALUES ({placeholders})"
+    # _loaded_at doit etre caste en TIMESTAMP(6) — Trino ne convertit pas VARCHAR auto
+    data_ph = ", ".join(["?"] * len(available))
+    sql = f"INSERT INTO bronze.{table} ({', '.join(all_cols)}) VALUES ({data_ph}, CAST(? AS TIMESTAMP(6)))"
 
     total, batch = 0, []
     for _, row in df.iterrows():
